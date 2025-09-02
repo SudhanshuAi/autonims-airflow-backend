@@ -1,0 +1,19 @@
+# Ignore Logs and Runtime Artifacts
+logs/
+configs/
+sling_home/
+
+# Ignore Environment Files
+.env
+
+# Ignore Airflow instance-specific config
+config/
+
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Docker
+.dockerignore
