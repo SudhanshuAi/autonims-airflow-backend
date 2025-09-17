@@ -10,7 +10,6 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-# --- No changes needed in these helper functions ---
 def clean_line(line: str) -> str:
     line = re.sub(r'\u001B\[\d+m', '', line)
     line = re.sub(r'\u001B\[0m', '', line)
@@ -33,7 +32,6 @@ def store_in_mongodb(mongo_config: dict, collection_name: str, data: dict):
 class SlingExecutor:
     def __init__(self, job_monitor, log_manager):
         self.active_jobs: Dict[str, subprocess.Popen] = {}
-        # --- CHANGE 1: Add a dictionary to track our output threads ---
         self.output_threads: Dict[str, List[threading.Thread]] = {}
         self.job_monitor = job_monitor
         self.log_manager = log_manager
@@ -41,7 +39,7 @@ class SlingExecutor:
         self.stream_logs: Dict[str, List[Dict]] = {}
 
     def set_connection(self, conn_name: str, conn_details: dict) -> bool:
-        # This function remains the same
+        # This function is correct
         try:
             command = ["sling", "conns", "set", conn_name]
             for key, value in conn_details.items():
@@ -54,7 +52,18 @@ class SlingExecutor:
     def execute_sling(self, job_id: str, config_file: str, mongodb_config: dict) -> bool:
         try:
             self.mongodb_config = mongodb_config
-            self.stream_logs[job_id] = []
+
+            # --- CHANGE 1: THE CORE FIX ---
+            # Initialize with a default, top-level log entry for the entire job.
+            # This ensures we always have a place to store logs, even if no "stream" is found.
+            self.stream_logs[job_id] = [{
+                "stream_name": "Overall Job Log",
+                "status": "Running",
+                "started_at": datetime.now().isoformat(),
+                "finished_at": None,
+                "details": []
+            }]
+            # --- End of Change 1 ---
             
             command = ["sling", "run", "-r", config_file]
             process = subprocess.Popen(
@@ -65,37 +74,22 @@ class SlingExecutor:
             self.active_jobs[job_id] = process
             self.job_monitor.update_status(job_id, JobStatus.RUNNING)
 
-            # --- CHANGE 2: Create, store, and start the output threads ---
             self.output_threads[job_id] = []
-            stdout_thread = threading.Thread(
-                target=self._monitor_output,
-                args=(process.stdout, job_id),
-                daemon=True
-            )
-            stderr_thread = threading.Thread(
-                target=self._monitor_output,
-                args=(process.stderr, job_id),
-                daemon=True
-            )
-            
+            stdout_thread = threading.Thread(target=self._monitor_output, args=(process.stdout, job_id), daemon=True)
+            stderr_thread = threading.Thread(target=self._monitor_output, args=(process.stderr, job_id), daemon=True)
             self.output_threads[job_id].extend([stdout_thread, stderr_thread])
-            
             stdout_thread.start()
             stderr_thread.start()
-            # --- End of Change 2 ---
 
-            # Start the main process monitoring thread
             threading.Thread(target=self._monitor_process, args=(job_id,), daemon=True).start()
 
             return True
         except Exception as e:
-            # This part remains the same
             self.job_monitor.add_log(job_id, f"Error starting job: {e}", datetime.now())
             self.job_monitor.update_status(job_id, JobStatus.FAILED)
             return False
 
     def _monitor_output(self, pipe, job_id: str):
-        # This function is logically correct and needs no changes
         for line in pipe:
             cleaned_line = clean_line(line)
             if not cleaned_line: continue
@@ -109,29 +103,31 @@ class SlingExecutor:
         process = self.active_jobs.get(job_id)
         if not process: return
 
-        # This waits for the main sling process to finish
         process.wait()
 
-        # --- CHANGE 3: The crucial fix - wait for the output threads to finish parsing ---
         if job_id in self.output_threads:
-            logging.info(f"Waiting for output threads to finish for job {job_id}...")
             for thread in self.output_threads[job_id]:
-                thread.join() # This line blocks until the thread is done
-            logging.info(f"Output threads finished for job {job_id}.")
-        # --- End of Change 3 ---
-
-        # Now that we've waited, self.stream_logs is guaranteed to be fully populated
+                thread.join()
+        
         return_code = process.poll()
         final_status = JobStatus.COMPLETED if return_code == 0 else JobStatus.FAILED
         self.job_monitor.update_status(job_id, final_status)
         
+        # --- CHANGE 3: Ensure the final status is set on the last log entry ---
+        if self.stream_logs.get(job_id):
+            last_log_entry = self.stream_logs[job_id][-1]
+            if not last_log_entry["finished_at"]:
+                last_log_entry["finished_at"] = datetime.now().isoformat()
+            # Update status to reflect the final job outcome
+            last_log_entry["status"] = "Success" if final_status == JobStatus.COMPLETED else "Failed"
+        # --- End of Change 3 ---
+
         summary_log = self.job_monitor.get_job_status(job_id)
 
         if self.mongodb_config:
-            # This will now run correctly
             store_in_mongodb(self.mongodb_config, "pipelineRunSummaries", summary_log)
 
-            # This condition will now correctly evaluate to true
+            # This condition will now always be true because we created a default entry.
             if self.stream_logs.get(job_id):
                 detailed_logs = {
                     "job_id": job_id, "dag_id": summary_log.get("dag_id"),
@@ -140,34 +136,46 @@ class SlingExecutor:
                 }
                 store_in_mongodb(self.mongodb_config, "pipelineRunDetails", detailed_logs)
 
-        # --- Cleanup ---
+        # Cleanup
         if job_id in self.active_jobs: del self.active_jobs[job_id]
         if job_id in self.stream_logs: del self.stream_logs[job_id]
         if job_id in self.output_threads: del self.output_threads[job_id]
 
     def _parse_stream_details(self, job_id: str, line: str, timestamp: datetime):
-        # This function is logically correct and needs no changes
         stream_start_match = re.search(r"running stream (\S+)", line)
+        
+        # Get the current log entry we are writing to
+        current_log_entry = self.stream_logs.get(job_id, [{}])[-1]
+
         if stream_start_match:
             stream_name = stream_start_match.group(1)
-            new_stream_log = {
-                "stream_name": stream_name, "status": "Running", "started_at": timestamp.isoformat(),
-                "finished_at": None, "details": [line]
-            }
-            self.stream_logs.setdefault(job_id, []).append(new_stream_log)
-            return
-        if self.stream_logs.get(job_id):
-            current_stream = self.stream_logs[job_id][-1]
-            current_stream["details"].append(line)
-            if "execution succeeded" in line.lower():
-                current_stream["status"] = "Success"
-                current_stream["finished_at"] = timestamp.isoformat()
-            elif "execution failed" in line.lower():
-                current_stream["status"] = "Failed"
-                current_stream["finished_at"] = timestamp.isoformat()
+            # --- CHANGE 2: Smartly update or create a new entry ---
+            # If the current entry is the default one and has no details yet,
+            # just rename it. Otherwise, create a new one.
+            if current_log_entry["stream_name"] == "Overall Job Log" and not current_log_entry["details"]:
+                current_log_entry["stream_name"] = stream_name
+                current_log_entry["details"].append(line)
+            else:
+                # A new stream is starting, so create a new log object for it
+                new_stream_log = {
+                    "stream_name": stream_name, "status": "Running", "started_at": timestamp.isoformat(),
+                    "finished_at": None, "details": [line]
+                }
+                self.stream_logs.setdefault(job_id, []).append(new_stream_log)
+            # --- End of Change 2 ---
+        else:
+            # If it's not a new stream, just append the log line to the current entry
+            current_log_entry["details"].append(line)
+
+        # Update status on the current entry if the stream finishes
+        if "execution succeeded" in line.lower():
+            current_log_entry["status"] = "Success"
+            current_log_entry["finished_at"] = timestamp.isoformat()
+        elif "execution failed" in line.lower():
+            current_log_entry["status"] = "Failed"
+            current_log_entry["finished_at"] = timestamp.isoformat()
                 
     def _parse_metrics(self, job_id: str, line: str):
-        # This function remains the same
         metrics = {}
         if "wrote" in line or "inserted" in line:
             rows_match = re.search(r"(?:wrote|inserted) (\d+[\d,]*) rows", line)
@@ -177,7 +185,6 @@ class SlingExecutor:
             self.job_monitor.update_metrics(job_id, metrics)
 
     def terminate_job(self, job_id: str) -> bool:
-        # This function remains the same
         if job_id not in self.active_jobs: return False
         try:
             self.active_jobs[job_id].terminate()
