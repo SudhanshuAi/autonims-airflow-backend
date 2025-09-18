@@ -143,6 +143,7 @@ class JobMonitor:
 
         job = self.jobs[job_id]
         return {
+            "job_id": job_id,
             **job,
             "status": job["status"].value,
             "metrics": job["metrics"].to_dict(),
