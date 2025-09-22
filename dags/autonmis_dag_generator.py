@@ -52,7 +52,8 @@ dag = DAG(
     schedule_interval='{schedule}',
     catchup=False,
     tags=["setup-ingestion-dag"],
-    is_paused_upon_creation=False
+    is_paused_upon_creation=False,
+    max_active_runs=1,
 )
 
 def call_sling_api(endpoint, payload):
@@ -156,7 +157,8 @@ dag = DAG(
     schedule_interval='{schedule}',
     catchup=False,
     tags=["run-ingestion-dag"],
-    is_paused_upon_creation=True
+    is_paused_upon_creation=True,
+    max_active_runs=1,
 )
 
 def call_sling_api(endpoint, payload):
