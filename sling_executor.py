@@ -53,7 +53,7 @@ class SlingExecutor:
             self.mongodb_config = mongodb_config
             self.stream_logs[job_id] = [] # Initialize as empty
             
-            command = ["sling", "run", "--concurrency", "5", "-r", config_file]
+            command = ["sling", "run", "--concurrency", "3", "-r", config_file]
             process = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 universal_newlines=True, bufsize=1
